@@ -9,44 +9,66 @@ jobs:
   build:
     runs-on: macos-14
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Extract TokoNote builder
-        shell: bash
-        run: |
-          set -euo pipefail
-          rm -rf kit
-          mkdir kit
-          unzip -q TokoNote-WhiteLabel-macOS-Builder-v1.zip -d kit
-          cp -R kit/tokonote-whitelabel-macos/. ./
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: '22.12.0'
 
-      - name: Download pinned Cue source
+      - name: Prepare TokoNote source
         shell: bash
         run: |
           set -euo pipefail
-          COMMIT="f8c8e820385fd448b5a6b3ab5b12ddad1bffa7b6"
-          curl -fL "https://github.com/Blueturboguy07/cue/archive/${COMMIT}.zip" -o /tmp/cue.zip
+          curl -fL https://github.com/Blueturboguy07/cue/archive/f8c8e820385fd448b5a6b3ab5b12ddad1bffa7b6.zip -o /tmp/cue.zip
           unzip -q /tmp/cue.zip -d /tmp
-          SRC="$(find /tmp -maxdepth 1 -type d -name 'cue-*' | head -1)"
-          mv "$SRC" "$GITHUB_WORKSPACE/source"
-
-      - name: Apply TokoNote white-label
-        shell: bash
-        run: |
-          set -euo pipefail
-          cp apply-tokonote.js source/apply-tokonote.js
-          mkdir -p source/assets source/scripts
-          cp assets/tokonote-icon-1024.png source/assets/tokonote-icon-1024.png
-          cp scripts/make-mac-icon.sh source/scripts/make-mac-icon.sh
-          chmod +x source/scripts/make-mac-icon.sh
-          node source/apply-tokonote.js source
-          source/scripts/make-mac-icon.sh
+          mv /tmp/cue-f8c8e820385fd448b5a6b3ab5b12ddad1bffa7b6 source
+          cd source
+          node <<'NODE'
+          const fs=require('fs');
+          const p=JSON.parse(fs.readFileSync('package.json','utf8'));
+          p.name='tokonote'; p.version='1.0.0'; p.description='TokoNote by Tokofile - Asisten Rapat dan Catatan AI untuk macOS'; p.author='Tokofile';
+          fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\n');
+          const files=['renderer/index.html','renderer/renderer.js','main.js','src/store.js'];
+          const pairs=[
+            [/\bcue\b/g,'TokoNote'],[/\bCue\b/g,'TokoNote'],
+            [/Welcome to TokoNote/g,'Selamat datang di TokoNote'],
+            [/Settings/g,'Pengaturan'],[/Done/g,'Selesai'],[/Next/g,'Lanjut'],[/Back/g,'Kembali'],[/Skip/g,'Lewati'],
+            [/What should I say\?/g,'Apa yang sebaiknya saya sampaikan?'],
+            [/Assist/g,'Bantu'],[/Follow-up/g,'Pertanyaan'],[/Recap/g,'Ringkasan'],[/Transcript/g,'Transkrip'],[/Clear/g,'Bersihkan'],
+            [/Start \/ stop listening/g,'Mulai / berhenti mendengarkan'],
+            [/Ask about your screen or conversation/g,'Tanyakan tentang layar atau percakapan'],
+            [/Connect an AI provider/g,'Hubungkan penyedia AI'],[/Allow TokoNote to see & hear/g,'Izinkan TokoNote melihat dan mendengar'],
+            [/You’re all set/g,'TokoNote siap digunakan'],[/You're all set/g,'TokoNote siap digunakan']
+          ];
+          for(const f of files){if(!fs.existsSync(f))continue;let s=fs.readFileSync(f,'utf8');for(const [a,b] of pairs)s=s.replace(a,b);fs.writeFileSync(f,s)}
+          let main=fs.readFileSync('main.js','utf8').replace(/Microsoft Edge Update/g,'TokoNote');fs.writeFileSync('main.js',main);
+          let store=fs.readFileSync('src/store.js','utf8').replace(/cue-data\.json/g,'tokonote-data.json');fs.writeFileSync('src/store.js',store);
+          NODE
+          cat > electron-builder.cjs <<'EOF'
+          module.exports = {
+            appId: 'id.tokofile.tokonote',
+            productName: 'TokoNote',
+            artifactName: 'TokoNote-${version}-${arch}.${ext}',
+            asar: true,
+            publish: null,
+            files: ['main.js','preload.js','src/**/*','renderer/**/*','LICENSE'],
+            mac: {
+              target: ['dmg','zip'],
+              category: 'public.app-category.productivity',
+              identity: null,
+              extendInfo: {
+                LSUIElement: true,
+                NSMicrophoneUsageDescription: 'TokoNote menggunakan mikrofon untuk mentranskripsikan percakapan yang Anda izinkan.',
+                NSAudioCaptureUsageDescription: 'TokoNote menggunakan audio sistem untuk transkripsi rapat yang Anda izinkan.',
+                NSScreenCaptureUsageDescription: 'TokoNote menggunakan tangkapan layar saat Anda meminta bantuan berdasarkan layar.'
+              }
+            },
+            dmg: { title: 'TokoNote', sign: false }
+          };
+          EOF
+          cat > TOKONOTE-LICENSE-NOTICE.md <<'EOF'
+          # TokoNote Open Source Notice
+          TokoNote by Tokofile adalah modified version dari https://github.com/Blueturboguy07/cue pada commit f8c8e820385fd448b5a6b3ab5b12ddad1bffa7b6 dan tetap mengikuti GPL-3.0-or-later.
+          EOF
 
       - name: Install dependencies
         working-directory: source
@@ -56,29 +78,23 @@ jobs:
         working-directory: source
         run: npx electron-builder --config electron-builder.cjs --mac dmg zip --arm64
 
-      - name: Preserve Apple Silicon artifacts
-        shell: bash
-        run: |
-          mkdir -p release
-          cp source/dist/*.dmg source/dist/*.zip release/ 2>/dev/null || true
+      - name: Collect arm64
+        run: mkdir -p release && cp source/dist/*.dmg source/dist/*.zip release/
 
       - name: Build Intel
         working-directory: source
-        run: |
-          rm -rf dist
-          npx electron-builder --config electron-builder.cjs --mac dmg zip --x64
+        run: rm -rf dist && npx electron-builder --config electron-builder.cjs --mac dmg zip --x64
 
-      - name: Collect Intel artifacts and GPL source
+      - name: Collect deliverables
         shell: bash
         run: |
-          cp source/dist/*.dmg source/dist/*.zip release/ 2>/dev/null || true
+          cp source/dist/*.dmg source/dist/*.zip release/
           cp source/LICENSE source/TOKONOTE-LICENSE-NOTICE.md release/
-          cd source
-          zip -qr ../release/TokoNote-1.0.0-source.zip . -x 'node_modules/*' 'dist/*' '.git/*' '*.DS_Store'
+          cd source && zip -qr ../release/TokoNote-1.0.0-source.zip . -x 'node_modules/*' 'dist/*' '.git/*'
 
-      - name: Upload TokoNote macOS
+      - name: Upload ready output
         uses: actions/upload-artifact@v4
         with:
-          name: TokoNote-macOS
+          name: TokoNote-macOS-READY
           path: release/*
           if-no-files-found: error
