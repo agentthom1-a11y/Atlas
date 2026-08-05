@@ -1,0 +1,84 @@
+name: Build TokoNote macOS
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Extract TokoNote builder
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf kit
+          mkdir kit
+          unzip -q TokoNote-WhiteLabel-macOS-Builder-v1.zip -d kit
+          cp -R kit/tokonote-whitelabel-macos/. ./
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.12.0'
+
+      - name: Download pinned Cue source
+        shell: bash
+        run: |
+          set -euo pipefail
+          COMMIT="f8c8e820385fd448b5a6b3ab5b12ddad1bffa7b6"
+          curl -fL "https://github.com/Blueturboguy07/cue/archive/${COMMIT}.zip" -o /tmp/cue.zip
+          unzip -q /tmp/cue.zip -d /tmp
+          SRC="$(find /tmp -maxdepth 1 -type d -name 'cue-*' | head -1)"
+          mv "$SRC" "$GITHUB_WORKSPACE/source"
+
+      - name: Apply TokoNote white-label
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp apply-tokonote.js source/apply-tokonote.js
+          mkdir -p source/assets source/scripts
+          cp assets/tokonote-icon-1024.png source/assets/tokonote-icon-1024.png
+          cp scripts/make-mac-icon.sh source/scripts/make-mac-icon.sh
+          chmod +x source/scripts/make-mac-icon.sh
+          node source/apply-tokonote.js source
+          source/scripts/make-mac-icon.sh
+
+      - name: Install dependencies
+        working-directory: source
+        run: npm ci
+
+      - name: Build Apple Silicon
+        working-directory: source
+        run: npx electron-builder --config electron-builder.cjs --mac dmg zip --arm64
+
+      - name: Preserve Apple Silicon artifacts
+        shell: bash
+        run: |
+          mkdir -p release
+          cp source/dist/*.dmg source/dist/*.zip release/ 2>/dev/null || true
+
+      - name: Build Intel
+        working-directory: source
+        run: |
+          rm -rf dist
+          npx electron-builder --config electron-builder.cjs --mac dmg zip --x64
+
+      - name: Collect Intel artifacts and GPL source
+        shell: bash
+        run: |
+          cp source/dist/*.dmg source/dist/*.zip release/ 2>/dev/null || true
+          cp source/LICENSE source/TOKONOTE-LICENSE-NOTICE.md release/
+          cd source
+          zip -qr ../release/TokoNote-1.0.0-source.zip . -x 'node_modules/*' 'dist/*' '.git/*' '*.DS_Store'
+
+      - name: Upload TokoNote macOS
+        uses: actions/upload-artifact@v4
+        with:
+          name: TokoNote-macOS
+          path: release/*
+          if-no-files-found: error
